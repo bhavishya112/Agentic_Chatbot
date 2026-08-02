@@ -86,7 +86,8 @@
 #     print("emb ---- ",emb.embedding)
 # Step 1: Find all items with page="schedule"
 
-import chromadb 
+from tools import search_products
+import chromadb
 
 client = chromadb.PersistentClient(path="data/vectordb/ui_vector_db2")
 collection = client.list_collections()
@@ -127,3 +128,13 @@ print(collection)
 
 
 # print(query_ui("dashboard",20,'desktop','ui_elements'))
+
+"""
+'function': {'name': 'search_products',
+    'arguments': '{"category": "electronics", "name": "",
+    "price": {"operator": "lt", "value": 100}, "supplier": ""}
+"""
+
+
+print(search_products({"category": "electronics", "name": "", "price": {
+      "operator": "lt", "value": 100}, "supplier": ""}))

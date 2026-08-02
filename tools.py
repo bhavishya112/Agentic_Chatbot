@@ -1,11 +1,20 @@
+from typing import Literal
+import json
+import chromadb
+from openai import OpenAI
 from ddgs import DDGS
 import logging
+from pymysql import Error
+from pymysql.cursors import DictCursor
+from db_connection import create_connection, create_qdrant_connection
+from fill_db import FIELD_COLLECTIONS, embed_text
+
 
 logging.basicConfig(
     filename="logs/ai_backend.log",
     filemode="a",  # 'a' appends new logs; 'w' overwrites each run
     level=logging.INFO,
-    format="%(asctime)s - %(levelname)s - %(filename)s - %(message)s",
+    format="%(asctime)s - %(filename)s - %(levelname)s - %(message)s",
     datefmt="%H:%M %d %B",
     encoding="utf-8",
 )
@@ -59,8 +68,6 @@ def web_search(query: str, num_results: int = 5) -> str:
         return f"Search failed: {e}"
 
 
-from openai import OpenAI
-
 client = OpenAI(
     base_url="http://localhost:11434/v1",
     api_key="ollama",
@@ -94,16 +101,6 @@ def summarize(text: str, query: str | None = None) -> str:
                     """
                   You are dad of an expert summarizer. Your primary rule: preserve ALL website references, links, and URLs exactly as they appear in the source text. 
                 - Always keep each URL directly attached to the specific point, fact, or information it supports. 
-                - Always keep each URL directly attached to the specific point, fact, or information it supports. 
-                - Always keep each URL directly attached to the specific point, fact, or information it supports. 
-                - Always keep each URL directly attached to the specific point, fact, or information it supports. 
-                - Always keep each URL directly attached to the specific point, fact, or information it supports. 
-                - Always keep each URL directly attached to the specific point, fact, or information it supports. 
-                - Always keep each URL directly attached to the specific point, fact, or information it supports. 
-                - Always keep each URL directly attached to the specific point, fact, or information it supports. 
-                - Always keep each URL directly attached to the specific point, fact, or information it supports. 
-                - Always keep each URL directly attached to the specific point, fact, or information it supports. 
-                - Always keep each URL directly attached to the specific point, fact, or information it supports. 
                 - Do not move URLs to the bottom or into a separate references section. 
                 - Do not paraphrase, shorten, or omit URLs. 
                 - If a summary point mentions a source, include the URL inline with that point.
@@ -123,18 +120,12 @@ def summarize(text: str, query: str | None = None) -> str:
     return summary
 
 
-from openai import OpenAI
-
 openaiclient = OpenAI(base_url="http://localhost:11434/v1", api_key="ollama")
 
 MODEL_NAME = "all-minilm:l6-v2"
 # COLLECTION_NAME = "ui_elements"
 VECTORDB_PATH = "data/vectordb/ui_vector_db2"
-import chromadb
-import json
 
-
-from typing import Literal
 
 # vectordb path for querying ui
 
@@ -151,9 +142,10 @@ def query_ui(
         client = chromadb.PersistentClient(path=VECTORDB_PATH)
         collection = client.get_collection(collection)
 
-        response = openaiclient.embeddings.create(input=question, model=MODEL_NAME)
+        response = openaiclient.embeddings.create(
+            input=question, model=MODEL_NAME)
         embedding = [emb.embedding for emb in response.data]
-        
+
         results = collection.query(
             query_embeddings=embedding, n_results=top_k, where={"view": view}
         )
@@ -170,7 +162,7 @@ def query_ui(
             for x in data:
                 if x == "size" or x == "position":
                     data[x] = json.loads(data[x])
-                result +=  f"{x} : {data[x]}|"
+                result += f"{x} : {data[x]}|"
                 # print(f"{x} : {data[x]}")
             result += "\n"
 
@@ -180,3 +172,239 @@ def query_ui(
     except Exception as e:
         logger.exception(e)
         return "query_ui failed : " + str(e)
+
+
+# =================================DATABASE TOOLS=========================================================================
+
+SEARCH_SCORE_THRESHOLD = 0.4
+SEARCH_LIMIT = 10
+SEARCH_FIELD_MAP = {
+    "name": "product_name",
+    "category": "category",
+    "supplier": "supplier",
+}
+
+
+def get_order(order_id: str):
+    """Fetch order details for a given order ID.
+
+    Connects to the database, queries the orders table using a parameterized
+    order_id, and returns either the order row or a message dict when not found.
+    """
+    conn = None
+    try:
+        conn = create_connection()
+        if not conn:
+            return {"error": "Database connection failed."}
+
+        cursor = conn.cursor(DictCursor)
+        cursor.execute("SELECT * FROM orders WHERE order_id = %s", (order_id,))
+        result = cursor.fetchone()
+        logger.info("[get_order] ✅ Successful!")
+        return result if result else {"message": f"No order found with ID {order_id}"}
+    except Error as e:
+        logger.exception("[get_order] ❌ Failed : %s", e)
+        return {"error": str(e)}
+    finally:
+        if conn:
+            conn.close()
+
+
+def search_products(query: dict):
+    """Search products using optional text and numeric filters.
+
+    Uses vector-expanded fuzzy matching for name, category, and supplier fields
+    before applying SQL filters for price. Returns a list of matching products
+    or a descriptive message when no results are found.
+
+    Query = 
+    {
+        "name":string,
+        "category":string,
+        "price": 
+        {
+            "operator" : ["lt","gt","et"],
+            "value" : float
+        },
+        "supplier" : "string"
+    }
+
+    """
+
+    conn = None
+
+    try:
+
+        conn = create_connection()
+
+        if not conn:
+            return {"error": "Database connection failed."}
+
+        cursor = conn.cursor(DictCursor)
+
+        corrected_query = _correct_search_terms(query)
+
+        name = corrected_query.get("name")
+        category = corrected_query.get("category")
+        price = query.get("price", {})
+        op = price.get("operator")
+        value = price.get("value")
+        supplier = corrected_query.get("supplier")
+
+        conditions = []
+        params = []
+
+        if name:
+            _append_text_condition(conditions, params, "name", name)
+
+        if category:
+            _append_text_condition(conditions, params, "category", category)
+
+        if supplier:
+            _append_text_condition(conditions, params, "supplier", supplier)
+
+        if price and value is not None:
+            if op == "lt":
+                conditions.append("price < %s")
+            elif op == "gt":
+                conditions.append("price > %s")
+            elif op == "et":
+                conditions.append("price = %s")
+            params.append(value)
+
+        q = "SELECT name, category, price, supplier FROM products"
+        if conditions:
+            q += " WHERE " + " AND ".join(conditions)
+
+        cursor.execute(q, params)
+
+        results = cursor.fetchall()
+
+        logger.info("[search_products] ✅ Successful!")
+        if results:
+
+            return results
+
+        return {"message": f"No products found for the query {q} : {params}"}
+
+    except Exception as e:
+        logger.exception("[search_products] ❌ Failed! : %s", e)
+        return {"error": str(e)}
+
+    finally:
+        if conn:
+            conn.close()
+
+
+def get_product(product_id: str):
+    """Fetch product details by product_id."""
+    conn = None
+    try:
+        conn = create_connection()
+        if not conn:
+            return {"error": "Database connection failed."}
+
+        cursor = conn.cursor(DictCursor)
+        cursor.execute(
+            "SELECT * FROM products WHERE product_id = %s", (product_id,))
+        result = cursor.fetchone()
+
+        logger.info("[get_product] ✅ Successful!")
+        return (
+            result if result else {
+                "message": f"No product found with ID {product_id}"}
+        )
+    except Error as e:
+        logger.exception("[get_product] ❌ Failed! : %s", e)
+        return {"error": str(e)}
+    finally:
+        if conn:
+            conn.close()
+
+
+def _correct_search_terms(query):
+    """Translate fuzzy text query values into matched values via Qdrant.
+
+    Attempts to use Qdrant to find close matches for supported text fields,
+    then replaces the original query values with the matched payloads.
+    """
+    corrected_query = dict(query or {})
+
+    try:
+        qdrant_conn = create_qdrant_connection()
+    except Exception:
+        return corrected_query
+
+    if not qdrant_conn:
+        return corrected_query
+
+    for query_key, field_name in SEARCH_FIELD_MAP.items():
+        value = corrected_query.get(query_key)
+        if not value:
+            continue
+
+        try:
+            matches = _vector_matches_for_field(qdrant_conn, field_name, value)
+        except Exception:
+            continue
+
+        if matches:
+            corrected_query[query_key] = matches
+
+    return corrected_query
+
+
+def _vector_matches_for_field(qdrant_conn, field_name, value):
+    """Search Qdrant for a text field value and return matching payloads.
+
+    Converts the provided text into an embedding, queries the configured Qdrant
+    collection for the field, and returns a list of matching field values whose
+    similarity scores are above the threshold.
+    """
+    vector = embed_text(value)
+    collection_name = FIELD_COLLECTIONS[field_name]
+
+    if hasattr(qdrant_conn, "search"):
+        results = qdrant_conn.search(
+            collection_name=collection_name,
+            query_vector=vector,
+            limit=SEARCH_LIMIT,
+            with_payload=True,
+            score_threshold=SEARCH_SCORE_THRESHOLD,
+        )
+    else:
+        query_result = qdrant_conn.query_points(
+            collection_name=collection_name,
+            query=vector,
+            limit=SEARCH_LIMIT,
+            with_payload=True,
+            score_threshold=SEARCH_SCORE_THRESHOLD,
+        )
+        results = getattr(query_result, "points", query_result)
+
+    matches = []
+    for result in results:
+        score = getattr(result, "score", 0) or 0
+        payload = getattr(result, "payload", {}) or {}
+        matched_value = payload.get(field_name)
+        if matched_value and score >= SEARCH_SCORE_THRESHOLD:
+            matches.append(matched_value)
+
+    return matches[:SEARCH_LIMIT]
+
+
+def _append_text_condition(conditions, params, column_name, values):
+    """Append SQL LIKE conditions for one text column and its values.
+
+    Converts a single value or list of values into SQL placeholders for
+    wildcard text matching and extends the conditions and params lists.
+    """
+    values = values if isinstance(values, list) else [values]
+    placeholders = []
+
+    for value in values:
+        placeholders.append(f"{column_name} LIKE %s")
+        params.append(f"%{value}%")
+
+    if placeholders:
+        conditions.append("(" + " OR ".join(placeholders) + ")")

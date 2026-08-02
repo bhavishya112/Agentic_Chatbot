@@ -1,4 +1,14 @@
 #!/usr/bin/env python3
+from tools import web_search, query_ui, get_order, get_product, search_products
+import pprint
+from openai import OpenAI
+from typing import Callable
+from threading import Thread
+from pydantic import BaseModel
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import StreamingResponse
+from fastapi import FastAPI
+import asyncio
 import json
 import sys
 import logging
@@ -30,9 +40,6 @@ logging.basicConfig(
 )
 
 
-import asyncio
-
-
 class QueueEmitter:
 
     def __init__(self):
@@ -42,13 +49,7 @@ class QueueEmitter:
         self.queue.put_nowait({"event": event, "data": data})
 
 
-from fastapi import FastAPI
-from fastapi.responses import StreamingResponse
-from fastapi.middleware.cors import CORSMiddleware
-
 app = FastAPI()
-
-from pydantic import BaseModel
 
 
 class ChatRequest(BaseModel):
@@ -57,13 +58,11 @@ class ChatRequest(BaseModel):
     query: str
 
 
-from threading import Thread
-
 # 3. Log a standard informational message
 logger.info("The application started successfully.")
 
 # ============================================================================================
-#                                       TOOL DEFINITIONS | TOOL REGISTRY | TOOLS
+#                                       TOOL DEFINITIONS | TOOLS
 # ============================================================================================
 TOOLS = [
     {
@@ -84,10 +83,10 @@ TOOLS = [
                     },
                 },
                 "required": ["query", "num_results"],
-                "additionalProperties": False,
+                "additionalProperties": False
             },
             "strict": True,
-        },
+        }
     },
     {
         "type": "function",
@@ -116,27 +115,114 @@ TOOLS = [
                         "type": "string",
                         "enum": ["ui_elements"],
                         "description": "vectordb collection to use for retrieval",
-                    },
+                    }
                 },
                 "required": ["question", "top_k", "view", "collection"],
-                "additionalProperties": False,
+                "additionalProperties": False
             },
-            "strict": True,
-        },
+            "strict": True
+        }
     },
+    {
+        "type": "function",
+        "function":
+        {
+            "name": "get_order",
+            "description": "Gets Order details of a particular order_id",
+            "parameters":
+            {
+                "type": "object",
+                "properties":
+                {
+                    "order_id": {
+                        "type": "string",
+                        "description": "Order ID"
+                    }
+                },
+                "required": ["order_id"],
+                "additionalProperties": False
+            },
+            "strict": True
+        }
+    },
+    {
+        "type": "function",
+        "function":
+        {
+            "name": "get_product",
+                "description": "Get details of a product",
+                "parameters":
+                {
+                    "type": "object",
+                    "properties":
+                    {
+                        "product_id":
+                        {
+                            "type": "string",
+                            "description": "Product ID"
+                        }
+                    },
+                    "required": ["product_id"],
+                    "additionalProperties": False
+                },
+            "strict": True
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "search_products",
+            "description": "Search products using query variables.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {
+                        "type": "object",
+                        "properties": {
+                            "name": {
+                                "type": "string"
+                            },
+                            "category": {
+                                "type": "string"
+                            },
+                            "price": {
+                                "type": "object",
+                                "properties": {
+                                    "operator": {
+                                        "type": "string",
+                                        "enum": ["lt", "gt", "et"]
+                                    },
+                                    "value": {
+                                        "type": "number"
+                                    }
+                                },
+                                "required": ["operator", "value"],
+                                "additionalProperties": False
+                            },
+                            "supplier": {
+                                "type": "string"
+                            }
+                        },
+                        "required": ["name", "category", "price", "supplier"],
+                        "additionalProperties": False
+
+                    }
+                },
+                "required": ["query"],
+                "additionalProperties": False
+            },
+            "strict": True
+        }
+    }
+
 ]
 
 # ================================================================================================
-#                                   TOOL EXECUTOR
+#                                   TOOL REGISTRY
 # ==============================================================================================
-# ----------------------------------------------------------------------------------------------
-# Register all available tools here
-# -------------------------------------------------------------------------------------------------
 
-from typing import Callable
-from tools import web_search, query_ui
-
-AVAILABLE_TOOLS: dict[str, Callable] = {"web_search": web_search, "query_ui": query_ui}
+AVAILABLE_TOOLS: dict[str, Callable] = {
+    "web_search": web_search, "query_ui": query_ui, "get_order": get_order, "get_product": get_product, "search_products": search_products}
 
 
 # ------------------------------------------------------------------
@@ -156,12 +242,13 @@ def run_tool(tool_name, **args) -> str:
     # Execute tool
     try:
         obs = tool(**args)
+        result += f"Tool: {tool_name}\n" f"Arguments: {args}\n" f"Observation:\n{obs}\n"
     except Exception as e:
+        logger.exception(e)
         result = f"Tool execution failed: {e}"
 
-    result += f"Tool: {tool_name}\n" f"Arguments: {args}\n" f"Observation:\n{obs}\n"
-
-    return result
+    finally:
+        return result
 
 
 # ---------------------------------CONVERSATIONS---------------------------------------------------
@@ -177,12 +264,6 @@ def add_or_update_conv(message: list[dict[str, str]], user_id: int, conv_id: int
     logger.info("⚠️ [CONVERSATIONS] : %s", CONVERSATIONS)
 
 
-# -------------------------------------------------------------------------------------------------
-# ======================================================================================================================
-# ----------------------------------------AGENT--------------------------------------------------------------------------------
-# ======================================================================================================================
-from openai import OpenAI
-
 # client = OpenAI(
 #     base_url="http://localhost:11434/v1",
 #     api_key="",
@@ -196,10 +277,6 @@ MAX_ITERATIONS = 5
 MODEL = "openai/gpt-oss-20b"
 # MODEL = "llama3.1:8b"
 
-
-import json
-import pprint
-import sys
 
 # Allow all origins (for testing)
 app.add_middleware(
@@ -238,10 +315,14 @@ async def chat(req: ChatRequest):
     return StreamingResponse(stream(), media_type="text/event-stream")
 
 
+# ======================================================================================================================
+#                                               AGENT
+# ======================================================================================================================
+
 def Agent(model: str, req: ChatRequest, emit: QueueEmitter):
 
     system_prompt = """
-    You are helpful chatbot for our ASD Academy
+    You are helpful chatbot for our customers
     UI information may ONLY come from tool outputs.
     IMPORTANT : For ui related queries, provide full information such as size,position,color, flow like myprofile>billing>details
 

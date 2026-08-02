@@ -51,7 +51,7 @@ To use the project, you'll have to do some preprocessing (if you want to use the
 
    
 ## 2.
-1. Now just go localhost/index.html and start the thing
+1. Now just go localhost/ and start the thing
 2. **remember** : this chatbot doesn't have chat history context(i wanted to keep it simple), you can just add it using summarizer and some extra logic of sql and vector database and some userid.
    <br> <br>
 ## Adding Tools

@@ -195,9 +195,13 @@ def build_index(rows: list, db_path: str = "./data/vectordb/ui_vector_db2"):
     collection = client.get_or_create_collection(COLLECTION_NAME)
 
     # searchable text = path + own text, this is what gets embedded
-    documents = [
-        f"{r['page']} : {r['description']}\ntext : {r['text']}".strip() for r in rows
-    ]
+    documents = []
+    for r in rows:
+        if r['tagName'] == "body":
+            documents.append(f"{r['page']} : {r['description']}\ntext : {r['text']}".strip())
+        else:
+            documents.append(f"{r['page']}  tag: {r['tagName']}: \ntext : {r['text']}".strip())
+        
     response = openaiclient.embeddings.create(input=documents, model=MODEL_NAME)
     embeddings = [emb.embedding for emb in response.data]
 

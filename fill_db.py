@@ -1,0 +1,172 @@
+"""Populate Qdrant collections from the online_store MariaDB products table."""
+
+from uuid import NAMESPACE_URL, uuid5
+
+from db_connection import create_connection, create_qdrant_connection
+
+try:
+    from qdrant_client.models import Distance, PointStruct, VectorParams
+except ImportError:
+    Distance = None
+    PointStruct = None
+    VectorParams = None
+
+try:
+    from sentence_transformers import SentenceTransformer
+except ImportError:
+    SentenceTransformer = None
+
+
+EMBEDDING_MODEL_NAME = "all-MiniLM-L6-v2"
+VECTOR_SIZE = 384
+FIELD_COLLECTIONS = {
+    "product_name": "products",
+    "category": "products_category",
+    "supplier": "products_supplier",
+}
+
+_embedding_model = None
+
+
+def get_embedding_model():
+    """Load the embedding model once per process."""
+    global _embedding_model
+    if SentenceTransformer is None:
+        raise ImportError("sentence-transformers is required for embeddings.")
+    if _embedding_model is None:
+        _embedding_model = SentenceTransformer(EMBEDDING_MODEL_NAME)
+    return _embedding_model
+
+
+def embed_text(
+    text, model=SentenceTransformer("sentence-transformers/all-MiniLM-L6-v2")
+):
+    """Return a normalized embedding list for Qdrant search/upsert."""
+    model = model or get_embedding_model()
+    vector = model.encode([str(text)], normalize_embeddings=True)[0]
+    return vector.tolist() if hasattr(vector, "tolist") else list(vector)
+
+
+def ensure_collections(qdrant_conn):
+    """Create the three product-field collections when missing."""
+    if Distance is None or VectorParams is None:
+        raise ImportError("qdrant-client is required for vector storage.")
+
+    for collection_name in FIELD_COLLECTIONS.values():
+        exists = False
+        if hasattr(qdrant_conn, "collection_exists"):
+            exists = qdrant_conn.collection_exists(collection_name)
+        else:
+            collections = qdrant_conn.get_collections().collections
+            exists = any(item.name == collection_name for item in collections)
+
+        if not exists:
+            qdrant_conn.create_collection(
+                collection_name=collection_name,
+                vectors_config=VectorParams(size=VECTOR_SIZE, distance=Distance.COSINE),
+            )
+
+
+def fetch_product_field_values(mariadb_conn):
+    """Read distinct product names, categories, and suppliers from MariaDB."""
+    cursor = mariadb_conn.cursor()
+    cursor.execute("SELECT product_name, category, supplier FROM products")
+    rows = cursor.fetchall()
+
+    values = {field_name: set() for field_name in FIELD_COLLECTIONS}
+
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+
+        for field_name in FIELD_COLLECTIONS:
+
+            if field_name == "product_name":
+                product_name = row.get("product_name")
+                category = row.get("category")
+
+                if product_name:
+                    combined = (
+                        f"name : {product_name} category : {category}"
+                        if category
+                        else product_name
+                    )
+                    values["product_name"].add(combined)
+
+            else:
+                value = row.get(field_name)
+                if value:
+                    values[field_name].add(str(value))
+
+    return values
+
+
+import re
+def extract_name(text: str) -> str:
+    # Regex: look for "name :" followed by any characters until "category" or end of string
+    match = re.search(r"name\s*:\s*(.*?)\s*(?:category|$)", text, re.IGNORECASE)
+    if match:
+        return match.group(1).strip()
+    return ""
+
+
+def build_points(field_name, values, model=None):
+    """Build deterministic Qdrant points for one product field."""
+    if PointStruct is None:
+        raise ImportError("qdrant-client is required for vector storage.")
+
+    points = []
+    for value in sorted(set(values)):
+        point_id = str(uuid5(NAMESPACE_URL, f"{field_name}:{value.lower()}"))
+        points.append(
+            PointStruct(
+                id=point_id,
+                vector=embed_text(value, model=model),
+                payload={field_name: extract_name(value)},
+            )
+        )
+    return points
+
+
+def fill_qdrant_from_mariadb(mariadb_conn=None, qdrant_conn=None, model=None):
+    """Sync product_name, category, and supplier values from MariaDB to Qdrant."""
+    owns_mariadb_conn = mariadb_conn is None
+    mariadb_conn = mariadb_conn or create_connection()
+    qdrant_conn = qdrant_conn or create_qdrant_connection()
+
+    if not mariadb_conn:
+        return {"error": "MariaDB connection failed."}
+    if not qdrant_conn:
+        return {"error": "Qdrant connection failed."}
+
+    try:
+        model = model or get_embedding_model()
+        ensure_collections(qdrant_conn)
+        values_by_field = fetch_product_field_values(mariadb_conn)
+
+        counts = {}
+        for field_name, values in values_by_field.items():
+            points = build_points(field_name, values, model=model)
+            if points:
+                qdrant_conn.upsert(
+                    collection_name=FIELD_COLLECTIONS[field_name],
+                    points=points,
+                )
+            counts[field_name] = len(points)
+
+        return {"indexed": counts}
+
+    finally:
+        if mariadb_conn or qdrant_conn:
+            mariadb_conn.close()
+            qdrant_conn.close()
+
+
+if __name__ == "__main__":
+    from . import db_connection
+
+    maria_conn = db_connection.create_connection()
+    qdrant_conn = db_connection.create_qdrant_connection()
+    model = SentenceTransformer("sentence-transformers/all-MiniLM-L6-v2")
+
+    print(fill_qdrant_from_mariadb(maria_conn, qdrant_conn, model))
