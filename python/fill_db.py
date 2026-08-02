@@ -2,7 +2,7 @@
 
 from uuid import NAMESPACE_URL, uuid5
 
-from db_connection import create_connection, create_qdrant_connection
+from python.db_connection import create_connection, create_qdrant_connection
 
 try:
     from qdrant_client.models import Distance, PointStruct, VectorParams

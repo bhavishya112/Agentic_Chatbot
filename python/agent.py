@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-from tools import web_search, query_ui, get_order, get_product, search_products
+from python.tools import web_search, query_ui, get_order, get_product, search_products
 import pprint
 from openai import OpenAI
 from typing import Callable
@@ -30,14 +30,18 @@ sys.stderr.reconfigure(encoding="utf-8", newline="\n")
 # Configure logging
 logger = logging.getLogger(__name__)
 
-logging.basicConfig(
-    filename="logs/ai_backend.log",
-    filemode="a",  # 'a' appends new logs; 'w' overwrites each run
-    level=logging.INFO,
-    format="%(asctime)s - %(levelname)s - %(filename)s - %(message)s",
-    datefmt="%H:%M %d %B",
-    encoding="utf-8",
-)
+logger = logging.getLogger("agent")
+logger.setLevel(logging.INFO)
+
+handler = logging.FileHandler("logs/ai_backend.log", encoding="utf-8")
+handler.setFormatter(logging.Formatter(
+    "%(asctime)s %(levelname)s %(message)s",
+    datefmt="%d %B %I:%M %p"
+
+))
+
+logger.addHandler(handler)
+logger.propagate = False
 
 
 class QueueEmitter:
@@ -239,13 +243,16 @@ def run_tool(tool_name, **args) -> str:
     # Find tool
     tool = AVAILABLE_TOOLS.get(tool_name)
 
-    # Execute tool
+# Execute tool
     try:
         obs = tool(**args)
         result += f"Tool: {tool_name}\n" f"Arguments: {args}\n" f"Observation:\n{obs}\n"
+
     except Exception as e:
-        logger.exception(e)
         result = f"Tool execution failed: {e}"
+        tb = e.__traceback__
+        raise Exception("Tool exceution failed : " +
+                        str(e.with_traceback(tb)))   # ⚠️ TO BE REMOVED
 
     finally:
         return result
@@ -320,125 +327,191 @@ async def chat(req: ChatRequest):
 # ======================================================================================================================
 
 def Agent(model: str, req: ChatRequest, emit: QueueEmitter):
+    try:
+        system_prompt = """
+        You are helpful chatbot for our customers, you can take multiple turns if a tool call fails
+        UI information may ONLY come from tool outputs.
+        IMPORTANT : For ui related queries, provide full information such as size,position,color, flow like myprofile>billing>details
 
-    system_prompt = """
-    You are helpful chatbot for our customers
-    UI information may ONLY come from tool outputs.
-    IMPORTANT : For ui related queries, provide full information such as size,position,color, flow like myprofile>billing>details
+        Never answer UI-related questions from your internal knowledge or reasoning. If no tool has returned the requested information, reply that it could not be found instead of guessing.
+        You are ReAct (Reasoning + Acting) Agent and can help with user navigation and up-to-date information 
 
-    Never answer UI-related questions from your internal knowledge or reasoning. If no tool has returned the requested information, reply that it could not be found instead of guessing.
-    You are ReAct (Reasoning + Acting) Agent and can help with user navigation and up-to-date information 
+        Working:
+        Stage 1:
+        Decide whether you can answer directly or require tool calls.
 
-    Working:
-    Stage 1:
-    Decide whether you can answer directly or require tool calls.
+        Stage 2:
+        Observe tool results.
+        If sufficient, answer.
+        Otherwise continue reasoning and call more tools.
 
-    Stage 2:
-    Observe tool results.
-    If sufficient, answer.
-    Otherwise continue reasoning and call more tools.
+        Personality:
+        Very User Friendly : give your best to help, Factually correct : You do not deviate from provided information
 
-    Personality:
-    Very User Friendly : give your best to help, Factually correct : You do not deviate from provided information
+        you can use web_search for internal issues for example if you want to know about a product.
+        Terminate ONLY by giving a final answer with no tool calls.
+        """
 
+        sys_message = [{"role": "system", "content": system_prompt}]
+        messages = [{"role": "user", "content": req.query}]
+        add_or_update_conv(messages, req.user_id, req.conv_id)
+        round = 0
 
-    Terminate ONLY by giving a final answer with no tool calls.
-    """
+        for _ in range(MAX_ITERATIONS):
 
-    sys_message = [{"role": "system", "content": system_prompt}]
-    messages = [{"role": "user", "content": req.query}]
-    add_or_update_conv(messages, req.user_id, req.conv_id)
-    round = 0
+            round += 1
 
-    for _ in range(MAX_ITERATIONS):
+            logger.info(
+                "[🐦‍🔥 CONTEXT %d]\n%s",
+                round,
+                pprint.pformat(messages, width=150),
+            )
 
-        round += 1
+            stream = client.chat.completions.create(
+                model=model,
+                messages=sys_message + CONVERSATIONS[req.user_id][req.conv_id],
+                tools=TOOLS,
+                temperature=0.2,
+                top_p=0.4,
+                max_tokens=1024,
+                reasoning_effort="medium",
+                stream=True,
+            )
 
-        logger.info(
-            "[🐦‍🔥 CONTEXT %d]\n%s",
-            round,
-            pprint.pformat(messages, width=150),
-        )
+            assistant_content = ""
+            assistant_reasoning = ""
 
-        stream = client.chat.completions.create(
-            model=model,
-            messages=sys_message + CONVERSATIONS[req.user_id][req.conv_id],
-            tools=TOOLS,
-            temperature=0.2,
-            top_p=0.4,
-            max_tokens=1024,
-            reasoning_effort="medium",
-            stream=True,
-        )
+            tool_calls = {}
 
-        assistant_content = ""
-        assistant_reasoning = ""
+            finish_reason = None
 
-        tool_calls = {}
+            for chunk in stream:
 
-        finish_reason = None
+                if not chunk.choices:
+                    continue
 
-        for chunk in stream:
+                choice = chunk.choices[0]
+                delta = choice.delta
 
-            if not chunk.choices:
+                finish_reason = choice.finish_reason
+
+                # ----------------------------
+                # reasoning
+                # ----------------------------
+
+                reasoning = getattr(delta, "reasoning", None)
+
+                if reasoning:
+                    assistant_reasoning += reasoning
+                    emit("thinking", {"token": reasoning})
+
+                # ----------------------------
+                # assistant content
+                # ----------------------------
+
+                if delta.content:
+                    assistant_content += delta.content
+                    emit("message", {"token": delta.content})
+
+                # ----------------------------
+                # tool calls
+                # ----------------------------
+
+                if delta.tool_calls:
+
+                    for tc in delta.tool_calls:
+
+                        idx = tc.index
+
+                        if idx not in tool_calls:
+                            tool_calls[idx] = {
+                                "id": "",
+                                "name": "",
+                                "arguments": "",
+                            }
+
+                        if tc.id:
+                            tool_calls[idx]["id"] = tc.id
+
+                        if tc.function:
+
+                            if tc.function.name:
+                                tool_calls[idx]["name"] = tc.function.name
+
+                            if tc.function.arguments:
+                                tool_calls[idx]["arguments"] += tc.function.arguments
+
+            # ============================================================
+            # Tool execution
+            # ============================================================
+
+            if tool_calls:
+
+                add_or_update_conv(
+                    [
+                        {
+                            "role": "assistant",
+                            "content": assistant_content,
+                            "tool_calls": [
+                                {
+                                    "id": tc["id"],
+                                    "type": "function",
+                                    "function": {
+                                        "name": tc.get("name", "none"),
+                                        "arguments": tc["arguments"],
+                                    },
+                                }
+                                for tc in tool_calls.values()
+                            ],
+                        }
+                    ],
+                    req.user_id,
+                    req.conv_id,
+                )
+
+                for tc in tool_calls.values():
+
+                    emit(
+                        "tool_call",
+                        {
+                            "name": tc["name"],
+                            "arguments": json.loads(tc["arguments"]),
+                        },
+                    )
+
+                    args = json.loads(tc["arguments"])
+
+                    result = run_tool(tc["name"], **args)
+
+                    logger.info("[TOOL] %s", tc["name"])
+                    logger.info("[RESULT] %s", result)
+
+                    emit(
+                        "tool_result",
+                        {
+                            "name": tc["name"],
+                            "result": result,
+                        },
+                    )
+
+                    add_or_update_conv(
+                        [
+                            {
+                                "role": "tool",
+                                "tool_call_id": tc["id"],
+                                "name": tc["name"],
+                                "content": json.dumps(result),
+                            }
+                        ],
+                        req.user_id,
+                        req.conv_id,
+                    )
+
                 continue
 
-            choice = chunk.choices[0]
-            delta = choice.delta
-
-            finish_reason = choice.finish_reason
-
-            # ----------------------------
-            # reasoning
-            # ----------------------------
-
-            reasoning = getattr(delta, "reasoning", None)
-
-            if reasoning:
-                assistant_reasoning += reasoning
-                emit("thinking", {"token": reasoning})
-
-            # ----------------------------
-            # assistant content
-            # ----------------------------
-
-            if delta.content:
-                assistant_content += delta.content
-                emit("message", {"token": delta.content})
-
-            # ----------------------------
-            # tool calls
-            # ----------------------------
-
-            if delta.tool_calls:
-
-                for tc in delta.tool_calls:
-
-                    idx = tc.index
-
-                    if idx not in tool_calls:
-                        tool_calls[idx] = {
-                            "id": "",
-                            "name": "",
-                            "arguments": "",
-                        }
-
-                    if tc.id:
-                        tool_calls[idx]["id"] = tc.id
-
-                    if tc.function:
-
-                        if tc.function.name:
-                            tool_calls[idx]["name"] = tc.function.name
-
-                        if tc.function.arguments:
-                            tool_calls[idx]["arguments"] += tc.function.arguments
-
-        # ============================================================
-        # Tool execution
-        # ============================================================
-
-        if tool_calls:
+            # ============================================================
+            # Final answer
+            # ============================================================
 
             add_or_update_conv(
                 [
@@ -450,7 +523,7 @@ def Agent(model: str, req: ChatRequest, emit: QueueEmitter):
                                 "id": tc["id"],
                                 "type": "function",
                                 "function": {
-                                    "name": tc["name"],
+                                    "name": tc.get("name", "none"),
                                     "arguments": tc["arguments"],
                                 },
                             }
@@ -462,116 +535,52 @@ def Agent(model: str, req: ChatRequest, emit: QueueEmitter):
                 req.conv_id,
             )
 
-            for tc in tool_calls.values():
+            break
 
-                emit(
-                    "tool_call",
-                    {
-                        "name": tc["name"],
-                        "arguments": json.loads(tc["arguments"]),
-                    },
-                )
+        emit("done", {})
 
-                args = json.loads(tc["arguments"])
+    except Exception as E:
+        emit("error", {"token": str(E)})
 
-                result = run_tool(tc["name"], **args)
+    # def main():
+    #     try:
 
-                logger.info("[TOOL] %s", tc["name"])
-                logger.info("[RESULT] %s", result)
+    #         query = ""
 
-                emit(
-                    "tool_result",
-                    {
-                        "name": tc["name"],
-                        "result": result,
-                    },
-                )
+    #         if len(sys.argv) > 1:
+    #             query = " ".join(sys.argv[1:])
 
-                add_or_update_conv(
-                    [
-                        {
-                            "role": "tool",
-                            "tool_call_id": tc["id"],
-                            "content": json.dumps(result),
-                        }
-                    ],
-                    req.user_id,
-                    req.conv_id,
-                )
+    #         elif not sys.stdin.isatty():
 
-            continue
+    #             raw = sys.stdin.read().strip()
 
-        # ============================================================
-        # Final answer
-        # ============================================================
+    #             if raw:
+    #                 try:
+    #                     payload = json.loads(raw)
+    #                     query = payload.get("query", "")
+    #                 except json.JSONDecodeError:
+    #                     query = raw
 
-        add_or_update_conv(
-            [
-                {
-                    "role": "assistant",
-                    "content": assistant_content,
-                    "tool_calls": [
-                        {
-                            "id": tc["id"],
-                            "type": "function",
-                            "function": {
-                                "name": tc["name"],
-                                "arguments": tc["arguments"],
-                            },
-                        }
-                        for tc in tool_calls.values()
-                    ],
-                }
-            ],
-            req.user_id,
-            req.conv_id,
-        )
+    #         else:
+    #             query = input("Ask something: ").strip()
 
-        break
+    #         if not query:
+    #             print("event: error")
+    #             print("data: " + json.dumps({"error": "Query required"}))
+    #             print()
+    #             sys.stdout.flush()
+    #             return
 
-    emit("done", {})
+    #         Agent(MODEL, query)
+    #         logger.info("Application Ended Successfully\n\n")
 
+    #     except Exception as e:
+    #         logger.exception(e)
 
-# def main():
-#     try:
+    #         print("event: error")
+    #         print("data: " + json.dumps({"error": str(e)}))
+    #         print()
+    #         sys.stdout.flush()
 
-#         query = ""
-
-#         if len(sys.argv) > 1:
-#             query = " ".join(sys.argv[1:])
-
-#         elif not sys.stdin.isatty():
-
-#             raw = sys.stdin.read().strip()
-
-#             if raw:
-#                 try:
-#                     payload = json.loads(raw)
-#                     query = payload.get("query", "")
-#                 except json.JSONDecodeError:
-#                     query = raw
-
-#         else:
-#             query = input("Ask something: ").strip()
-
-#         if not query:
-#             print("event: error")
-#             print("data: " + json.dumps({"error": "Query required"}))
-#             print()
-#             sys.stdout.flush()
-#             return
-
-#         Agent(MODEL, query)
-#         logger.info("Application Ended Successfully\n\n")
-
-#     except Exception as e:
-#         logger.exception(e)
-
-#         print("event: error")
-#         print("data: " + json.dumps({"error": str(e)}))
-#         print()
-#         sys.stdout.flush()
-
-
-# if __name__ == "__main__":
-#     main()
+    # if __name__ == "__main__":
+    #     main()

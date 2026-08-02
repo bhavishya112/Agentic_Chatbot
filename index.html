@@ -292,9 +292,14 @@
         }
 
         .error-msg {
+            flex-direction: column;
             color: #f85149;
             padding: 10px;
-            margin-top: 10px;
+            position:relative;
+            top:50%;
+            left:50%;
+            margin:auto;
+            /* margin-top: 10px; */
             background: rgba(248, 81, 73, 0.1);
             border-radius: 8px;
             display: none;
@@ -334,15 +339,17 @@
 <body>
     <div class="chat-container">
         <h1>⚡ Chatbot </h1>
-
-        <div class="chat-messages" id="chatMessages"></div>
-
+        
+        <div class="chat-messages" id="chatMessages">
+            <div class="error-msg" id="errorMsg"></div>
+        </div>
+        
+        
         <div class="input-area">
             <input type="text" id="queryInput" placeholder="Ask anything..." autocomplete="off">
             <button id="sendBtn" onclick="sendQuery()">Send</button>
         </div>
 
-        <div class="error-msg" id="errorMsg"></div>
     </div>
 
     <script>
@@ -485,7 +492,7 @@
         function showError(text) {
             errorMsg.textContent = text;
             errorMsg.style.display = 'block';
-            setTimeout(() => errorMsg.style.display = 'none', 5000);
+            // setTimeout(() => errorMsg.style.display = 'none', 5000);
         }
 
         function stopStreaming() {
@@ -555,6 +562,10 @@
                     return;
                 }
 
+                // Clear previous error only after a successful response
+                errorMsg.textContent = '';
+                errorMsg.style.display = 'none';
+
                 const reader = response.body.getReader();
                 const decoder = new TextDecoder();
                 let buffer = '';
@@ -575,6 +586,7 @@
                         if (!event.trim()) continue;
 
                         const lines = event.split('\n');
+        
                         let eventName = 'message';
                         let data = '';
 
@@ -587,8 +599,9 @@
                         }
 
                         if (eventName === 'error') {
+                
                             const err = JSON.parse(data);
-                            showError(err.error);
+                            showError(err.token);
                             stopStreaming();
                             return;
                         }
@@ -607,9 +620,7 @@
                                 return;
                             }
 
-                            const textToken = typeof chunk === 'string'
-                                ? chunk
-                                : chunk?.token || chunk?.content || '';
+                            const textToken = typeof chunk === 'string' ? chunk : chunk?.token || chunk?.content || '';
 
                             if (textToken) {
                                 // Accumulate raw markdown text
@@ -622,6 +633,7 @@
                                 stopStreaming();
                             }
                         }
+
                     }
                 }
                 stopStreaming();

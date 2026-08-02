@@ -6,20 +6,22 @@ from ddgs import DDGS
 import logging
 from pymysql import Error
 from pymysql.cursors import DictCursor
-from db_connection import create_connection, create_qdrant_connection
-from fill_db import FIELD_COLLECTIONS, embed_text
+from python.db_connection import create_connection, create_qdrant_connection
+from python.fill_db import FIELD_COLLECTIONS, embed_text
 
 
-logging.basicConfig(
-    filename="logs/ai_backend.log",
-    filemode="a",  # 'a' appends new logs; 'w' overwrites each run
-    level=logging.INFO,
-    format="%(asctime)s - %(filename)s - %(levelname)s - %(message)s",
-    datefmt="%H:%M %d %B",
-    encoding="utf-8",
-)
+logger = logging.getLogger("tools")
+logger.setLevel(logging.INFO)
 
-logger = logging.getLogger(__name__)
+handler = logging.FileHandler("logs/tools.log", encoding="utf-8")
+handler.setFormatter(logging.Formatter(
+    "%(asctime)s %(levelname)s %(message)s",
+    datefmt="%d %B %I:%M %p"
+
+))
+
+logger.addHandler(handler)
+logger.propagate = False
 
 
 def web_search(query: str, num_results: int = 5) -> str:
@@ -34,8 +36,8 @@ def web_search(query: str, num_results: int = 5) -> str:
         Formatted string containing search results.
     """
 
-    logger.info("✅Starting Web Search")
     num_results = int(num_results)
+    logger.info("[web_search(query:%s,num_results:%d)]", query, num_results)
     try:
         with DDGS() as ddgs:
             results = list(ddgs.text(query, max_results=num_results))
@@ -64,7 +66,7 @@ def web_search(query: str, num_results: int = 5) -> str:
         return result
 
     except Exception as e:
-        logger.exception(e)
+        logger.exception("web search failed : " + str(e))
         return f"Search failed: {e}"
 
 
@@ -85,7 +87,7 @@ def summarize(text: str, query: str | None = None) -> str:
     Returns:
         A summary string.
     """
-    logger.info("✅Starting Summarizer")
+    logger.info("[summarize(%s,%s)]", text, query)
     prompt = text + "\n\nGet useful and important details from the text."
 
     if query:
@@ -138,7 +140,8 @@ def query_ui(
 ) -> str:
 
     try:
-        logger.info("✅ [QUERYING UI] question: %s", question)
+        logger.info("[query_ui(question : %s,top_k : %d, view : %s, collection : %s)]",
+                    question, top_k, view, collection)
         client = chromadb.PersistentClient(path=VECTORDB_PATH)
         collection = client.get_collection(collection)
 
@@ -170,7 +173,7 @@ def query_ui(
         return result
 
     except Exception as e:
-        logger.exception(e)
+        logger.exception("query ui failed: "+str(e))
         return "query_ui failed : " + str(e)
 
 
@@ -200,10 +203,11 @@ def get_order(order_id: str):
         cursor = conn.cursor(DictCursor)
         cursor.execute("SELECT * FROM orders WHERE order_id = %s", (order_id,))
         result = cursor.fetchone()
-        logger.info("[get_order] ✅ Successful!")
+        logger.info("[get_order(order_id:%d)] ✅ Successful!", order_id)
+        logger.info("[RESULT] : %s", result)
         return result if result else {"message": f"No order found with ID {order_id}"}
     except Error as e:
-        logger.exception("[get_order] ❌ Failed : %s", e)
+        logger.exception("[get_order] ❌ Failed : %s", str(e))
         return {"error": str(e)}
     finally:
         if conn:
@@ -230,7 +234,7 @@ def search_products(query: dict):
     }
 
     """
-
+    logger.info("[search_products(query : %s)]", str(query))
     conn = None
 
     try:
@@ -281,6 +285,7 @@ def search_products(query: dict):
         results = cursor.fetchall()
 
         logger.info("[search_products] ✅ Successful!")
+        logger.info("[RESULTS] : %s", results)
         if results:
 
             return results
@@ -288,7 +293,7 @@ def search_products(query: dict):
         return {"message": f"No products found for the query {q} : {params}"}
 
     except Exception as e:
-        logger.exception("[search_products] ❌ Failed! : %s", e)
+        logger.exception("[search_products] ❌ Failed! : %s", str(e))
         return {"error": str(e)}
 
     finally:
@@ -310,12 +315,13 @@ def get_product(product_id: str):
         result = cursor.fetchone()
 
         logger.info("[get_product] ✅ Successful!")
+        logger.info("[RESULTS] : %s",result)
         return (
             result if result else {
                 "message": f"No product found with ID {product_id}"}
         )
     except Error as e:
-        logger.exception("[get_product] ❌ Failed! : %s", e)
+        logger.exception("[get_product] ❌ Failed! : %s", str(e))
         return {"error": str(e)}
     finally:
         if conn:
