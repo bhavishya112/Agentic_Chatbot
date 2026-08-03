@@ -179,10 +179,10 @@ def query_ui(
 
 # =================================DATABASE TOOLS=========================================================================
 
-SEARCH_SCORE_THRESHOLD = 0.4
+SEARCH_SCORE_THRESHOLD = 0.7
 SEARCH_LIMIT = 10
 SEARCH_FIELD_MAP = {
-    "name": "product_name",
+    "name": "name",
     "category": "category",
     "supplier": "supplier",
 }
@@ -246,8 +246,9 @@ def search_products(query: dict):
 
         cursor = conn.cursor(DictCursor)
 
+        print("Real Query : ", query)
         corrected_query = _correct_search_terms(query)
-
+        print("Corrected Query : ", corrected_query)
         name = corrected_query.get("name")
         category = corrected_query.get("category")
         price = query.get("price", {})
@@ -315,7 +316,7 @@ def get_product(product_id: str):
         result = cursor.fetchone()
 
         logger.info("[get_product] ✅ Successful!")
-        logger.info("[RESULTS] : %s",result)
+        logger.info("[RESULTS] : %s", result)
         return (
             result if result else {
                 "message": f"No product found with ID {product_id}"}
@@ -395,7 +396,8 @@ def _vector_matches_for_field(qdrant_conn, field_name, value):
         matched_value = payload.get(field_name)
         if matched_value and score >= SEARCH_SCORE_THRESHOLD:
             matches.append(matched_value)
-
+    # from IPython import embed
+    # embed()
     return matches[:SEARCH_LIMIT]
 
 

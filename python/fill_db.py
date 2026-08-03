@@ -1,5 +1,6 @@
 """Populate Qdrant collections from the online_store MariaDB products table."""
 
+import re
 from uuid import NAMESPACE_URL, uuid5
 
 from python.db_connection import create_connection, create_qdrant_connection
@@ -20,7 +21,7 @@ except ImportError:
 EMBEDDING_MODEL_NAME = "all-MiniLM-L6-v2"
 VECTOR_SIZE = 384
 FIELD_COLLECTIONS = {
-    "product_name": "products",
+    "name": "products_name",
     "category": "products_category",
     "supplier": "products_supplier",
 }
@@ -63,14 +64,15 @@ def ensure_collections(qdrant_conn):
         if not exists:
             qdrant_conn.create_collection(
                 collection_name=collection_name,
-                vectors_config=VectorParams(size=VECTOR_SIZE, distance=Distance.COSINE),
+                vectors_config=VectorParams(
+                    size=VECTOR_SIZE, distance=Distance.COSINE),
             )
 
 
 def fetch_product_field_values(mariadb_conn):
     """Read distinct product names, categories, and suppliers from MariaDB."""
     cursor = mariadb_conn.cursor()
-    cursor.execute("SELECT product_name, category, supplier FROM products")
+    cursor.execute("SELECT name, category, supplier FROM products")
     rows = cursor.fetchall()
 
     values = {field_name: set() for field_name in FIELD_COLLECTIONS}
@@ -81,8 +83,8 @@ def fetch_product_field_values(mariadb_conn):
 
         for field_name in FIELD_COLLECTIONS:
 
-            if field_name == "product_name":
-                product_name = row.get("product_name")
+            if field_name == "name":
+                product_name = row.get("name")
                 category = row.get("category")
 
                 if product_name:
@@ -91,7 +93,7 @@ def fetch_product_field_values(mariadb_conn):
                         if category
                         else product_name
                     )
-                    values["product_name"].add(combined)
+                    values["name"].add(combined)
 
             else:
                 value = row.get(field_name)
@@ -101,13 +103,13 @@ def fetch_product_field_values(mariadb_conn):
     return values
 
 
-import re
 def extract_name(text: str) -> str:
     # Regex: look for "name :" followed by any characters until "category" or end of string
-    match = re.search(r"name\s*:\s*(.*?)\s*(?:category|$)", text, re.IGNORECASE)
+    match = re.search(r"name\s*:\s*(.*?)\s*(?:category|$)",
+                      text, re.IGNORECASE)
     if match:
         return match.group(1).strip()
-    return ""
+    return text
 
 
 def build_points(field_name, values, model=None):
@@ -125,6 +127,8 @@ def build_points(field_name, values, model=None):
                 payload={field_name: extract_name(value)},
             )
         )
+    # import IPython
+    # IPython.embed()
     return points
 
 
@@ -142,7 +146,9 @@ def fill_qdrant_from_mariadb(mariadb_conn=None, qdrant_conn=None, model=None):
     try:
         model = model or get_embedding_model()
         ensure_collections(qdrant_conn)
-        values_by_field = fetch_product_field_values(mariadb_conn)
+        values_by_field = fetch_product_field_values(mariadb_conn) # {name : {name + category}, category : {}, supplier : {}}
+        # import IPython
+        # IPython.embed()
 
         counts = {}
         for field_name, values in values_by_field.items():
@@ -151,6 +157,7 @@ def fill_qdrant_from_mariadb(mariadb_conn=None, qdrant_conn=None, model=None):
                 qdrant_conn.upsert(
                     collection_name=FIELD_COLLECTIONS[field_name],
                     points=points,
+                    
                 )
             counts[field_name] = len(points)
 

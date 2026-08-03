@@ -474,9 +474,8 @@ def Agent(model: str, req: ChatRequest, emit: QueueEmitter):
                     emit(
                         "tool_call",
                         {
-                            "name": tc["name"],
-                            "arguments": json.loads(tc["arguments"]),
-                        },
+                            "data": "calling tool " + tc["name"]
+                        }
                     )
 
                     args = json.loads(tc["arguments"])

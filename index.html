@@ -333,6 +333,29 @@
             background: #30363d;
             color: #c9d1d9;
         }
+
+        .execution {
+            margin: 8px 0;
+        }
+
+        .execution-header {
+            cursor: pointer;
+            color: #888;
+            font-size: 14px;
+            user-select: none;
+        }
+
+        .execution-content {
+            white-space: pre-wrap;
+            overflow: hidden;
+            max-height: 500px;
+            transition: max-height 0.3s ease;
+        }
+
+        .execution.collapsed .execution-content {
+            max-height: 0;
+        }
+
     </style>
 </head>
 
@@ -358,6 +381,9 @@
         const sendBtn = document.getElementById('sendBtn');
         const errorMsg = document.getElementById('errorMsg');
 
+        let currentReader = null;
+        let abortController = null;
+        let isStopped = false;
         let eventSource = null;
         let currentAssistantBubble = null;
         let rawTextBuffer = '';      // Accumulates raw Markdown text
@@ -376,9 +402,9 @@
         });
         // console.log("isUserScrolling : " + isUserScrolling(chatMessages));
 
-        function addMessage(text, isUser) {
+        function addMessage(text, isUser,isAssistant) {
             const msgDiv = document.createElement('div');
-            msgDiv.className = `message ${isUser ? 'user' : 'assistant'}`;
+            msgDiv.className = `message ${isUser ? 'user' : (isAssistant? 'assistant' : 'execution')}`;
 
             const bubble = document.createElement('div');
             bubble.className = 'message-bubble';
@@ -386,10 +412,13 @@
             if (isUser) {
                 // User messages: plain text (or light markdown)
                 bubble.textContent = text;
-            } else {
+            } else if (isAssistant){
                 // Assistant messages: markdown container
                 bubble.className += ' markdown-body';
                 bubble.innerHTML = renderMarkdown(text);
+            }
+            else{
+                bubble.className += ' execution-trace';
             }
 
             msgDiv.appendChild(bubble);
@@ -414,6 +443,14 @@
             });
         }
 
+        function createExecutionMessage(){
+            const msgDiv = document.createElement('div');
+            msgDiv.className = 'message execution';
+            chatMessages.appendChild(msgDiv);
+            chatMessages.scrollTop = chatMessages.scrollHeight;
+
+            return {msgDiv};
+        }
         function createStreamingMessage() {
             const msgDiv = document.createElement('div');
             msgDiv.className = 'message assistant';
@@ -492,14 +529,23 @@
         function showError(text) {
             errorMsg.textContent = text;
             errorMsg.style.display = 'block';
+            // msgDiv.appendChild(errorMsg);
             // setTimeout(() => errorMsg.style.display = 'none', 5000);
         }
 
         function stopStreaming() {
-            if (eventSource) {
-                eventSource.close();
-                eventSource = null;
-            }
+            isStopped = true;
+
+
+            if (currentReader)
+                currentReader.cancel();
+
+            if (abortController)
+                abortController.abort();
+
+            currentReader = null;
+            abortController = null;
+
             sendBtn.textContent = 'Send';
             sendBtn.classList.remove('stop-btn');
             sendBtn.onclick = sendQuery;
@@ -519,130 +565,154 @@
             currentAssistantBubble = null;
         }
 
-        async function sendQuery() {
-            const query = queryInput.value.trim();
-            if (!query) return;
+async function sendQuery() {
+    const execution = document.createElement("div");
+    execution.className = "execution";
 
-            if (eventSource) {
-                stopStreaming();
-                return;
-            }
+    const header = document.createElement("div");
+    header.className = "execution-header";
+    header.textContent = "Execution Trace";
 
-            // Add user message (plain text)
-            addMessage(query, true);
-            queryInput.value = '';
+    const content = document.createElement("div");
+    content.className = "execution-content";
 
-            // Create streaming assistant message
-            const { bubble, contentDiv, cursor } = createStreamingMessage();
-            currentAssistantBubble = bubble;
-            rawTextBuffer = '';
-            lastRenderedHtml = '';
+    header.onclick = () => execution.classList.toggle("collapsed");
 
-            sendBtn.textContent = 'Stop';
-            sendBtn.classList.add('stop-btn');
-            sendBtn.onclick = stopStreaming;
-            queryInput.disabled = true;
+    execution.append(header, content);
+    chatMessages.appendChild(execution);
+    const query = queryInput.value.trim();
+    if (!query) return;
 
+    if (eventSource) {
+        stopStreaming();
+        return;
+    }
+    
+    addMessage(query, true, false);
+    queryInput.value = '';
+
+    chatMessages.appendChild(execution);
+
+    const { bubble, contentDiv, cursor } = createStreamingMessage();
+    currentAssistantBubble = bubble;
+    rawTextBuffer = '';
+    lastRenderedHtml = '';
+
+    sendBtn.textContent = 'Stop';
+    sendBtn.classList.add('stop-btn');
+    sendBtn.onclick = stopStreaming;
+    queryInput.disabled = true;
+
+    try {
+        abortController = new AbortController();
+        isStopped = false;
+        const response = await fetch("http://127.0.0.1:8000/backend.php", {
+            signal: abortController.signal,
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ query: query })
+        });
+
+        if (!response.ok) {
+            const errorText = await response.text();
             try {
-                const response = await fetch("http://127.0.0.1:8000/backend.php", {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ query: query })
-                });
+                const payload = JSON.parse(errorText);
+                showError(payload.error || `Server error ${response.status}`);
+            } catch {
+                showError(`Server error ${response.status}`);
+            }
+            return; // finally block below handles cleanup
+        }
 
-                if (!response.ok) {
-                    const errorText = await response.text();
-                    try {
-                        const payload = JSON.parse(errorText);
-                        showError(payload.error || `Server error ${response.status}`);
-                    } catch {
-                        showError(`Server error ${response.status}`);
+        errorMsg.textContent = '';
+        errorMsg.style.display = 'none';
+
+        currentReader = response.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = '';
+
+        while (true) {
+            if (isStopped) break;
+
+            const { done, value } = await currentReader.read();
+            if (done) break;
+
+            buffer += decoder.decode(value, { stream: true });
+            buffer = buffer.replace(/\r\n/g, '\n');
+
+            const events = buffer.split('\n\n');
+            buffer = events.pop();
+
+            for (const event of events) {
+                if (!event.trim()) continue;
+
+                const lines = event.split('\n');
+                let eventName = 'message';
+                let data = '';
+                
+                for (const line of lines) {
+                    if (line.startsWith('event:')) {
+                        eventName = line.slice(6).trim();
+                    } else if (line.startsWith('data:')) {
+                        data = line.slice(5).trim();
                     }
-                    stopStreaming();
+                }
+                
+                
+                if (eventName === 'error') {
+                    const err = JSON.parse(data);
+                    showError(err.token);
                     return;
                 }
 
-                // Clear previous error only after a successful response
-                errorMsg.textContent = '';
-                errorMsg.style.display = 'none';
-
-                const reader = response.body.getReader();
-                const decoder = new TextDecoder();
-                let buffer = '';
-
-                while (true) {
-                    const { done, value } = await reader.read();
-                    if (done) break;
-
-                    buffer += decoder.decode(value, { stream: true });
-
-                    // Normalize newlines to LF for SSE parsing
-                    buffer = buffer.replace(/\r\n/g, '\n');
-
-                    const events = buffer.split('\n\n');
-                    buffer = events.pop();
-
-                    for (const event of events) {
-                        if (!event.trim()) continue;
-
-                        const lines = event.split('\n');
-        
-                        let eventName = 'message';
-                        let data = '';
-
-                        for (const line of lines) {
-                            if (line.startsWith('event:')) {
-                                eventName = line.slice(6).trim();
-                            } else if (line.startsWith('data:')) {
-                                data = line.slice(5).trim();
-                            }
-                        }
-
-                        if (eventName === 'error') {
+                if (eventName === 'thinking') {
+                    const token = JSON.parse(data);
+                    content.textContent += token.token;
+                    chatMessages.scrollTop = chatMessages.scrollHeight;
+                }
                 
-                            const err = JSON.parse(data);
-                            showError(err.token);
-                            stopStreaming();
-                            return;
-                        }
+                if (eventName === 'tool_call'){
+                    const token = JSON.parse(data);
+                    content.textContent += "\n\n" + token.data + "\n\n";
+                    chatMessages.scrollTop = chatMessages.scrollHeight;
+                    
+                }
 
-                        if (eventName === 'done') {
-                            stopStreaming();
-                            return;
-                        }
+                if (eventName === 'done') {
+                    return;
+                }
 
-                        if (eventName === 'message' && data) {
-                            const chunk = JSON.parse(data);
+                if (eventName === 'message' && data) {
+                    execution.classList.add("collapsed");
 
-                            if (chunk && chunk.error) {
-                                showError(chunk.error);
-                                stopStreaming();
-                                return;
-                            }
+                    const chunk = JSON.parse(data);
 
-                            const textToken = typeof chunk === 'string' ? chunk : chunk?.token || chunk?.content || '';
+                    if (chunk && chunk.error) {
+                        showError(chunk.error);
+                        return;
+                    }
 
-                            if (textToken) {
-                                // Accumulate raw markdown text
-                                rawTextBuffer += textToken;
-                                // Re-render entire buffer as markdown
-                                updateStreamingMarkdown(rawTextBuffer);
-                            }
+                    const textToken = typeof chunk === 'string' ? chunk : chunk?.token || chunk?.content || '';
 
-                            if (chunk && chunk.done) {
-                                stopStreaming();
-                            }
-                        }
+                    if (textToken) {
+                        rawTextBuffer += textToken;
+                        updateStreamingMarkdown(rawTextBuffer);
+                    }
 
+                    if (chunk && chunk.done) {
+                        return;
                     }
                 }
-                stopStreaming();
-
-            } catch (err) {
-                showError('Connection error: ' + err.message);
-                stopStreaming();
             }
         }
+    } catch (err) {
+        if (err.name !== "AbortError") {
+            showError('Connection error: ' + err.message);
+        }
+    } finally {
+        stopStreaming();
+    }
+}
     </script>
 </body>
 

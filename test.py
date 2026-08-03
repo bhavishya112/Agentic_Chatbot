@@ -139,18 +139,80 @@
 # print(search_products({"category": "electronics", "name": "", "price": {
 #       "operator": "lt", "value": 100}, "supplier": ""}))
 
-import logging
+# import logging
 
-logger = logging.getLogger("test")
-logger.setLevel(logging.INFO)
+# logger = logging.getLogger("test")
+# logger.setLevel(logging.INFO)
 
-handler = logging.FileHandler("logs/test.log", encoding="utf-8")
-handler.setFormatter(logging.Formatter(
-    "%(asctime)s %(levelname)s %(message)s",
-    datefmt="%d %B %I:%M %p"
-))
+# handler = logging.FileHandler("logs/test.log", encoding="utf-8")
+# handler.setFormatter(logging.Formatter(
+#     "%(asctime)s %(levelname)s %(message)s",
+#     datefmt="%d %B %I:%M %p"
+# ))
 
 
-logger.addHandler(handler)
-logger.propagate = False
-logger.info("chhhhhooooooooooooooooooot")
+# logger.addHandler(handler)
+# logger.propagate = False
+# logger.info("chhhhhooooooooooooooooooot")
+
+# from python.agent import ChatRequest, QueueEmitter, MODEL
+# from threading import Thread
+# import json
+# from fastapi.responses import StreamingResponse
+# from fastapi import FastAPI
+# import time
+
+# app = FastAPI()
+
+
+# @app.post("/chat")
+# async def chat(req: ChatRequest):
+#     # add_or_update_conv(req.query, req.user_id, req.conv_id)
+#     emitter = QueueEmitter()
+
+#     def run_agent():
+#         Agent(MODEL, req, emitter.emit)
+
+#     Thread(target=run_agent).start()
+
+#     async def stream():
+
+#         while True:
+
+#             event = await emitter.queue.get()
+
+#             yield (
+#                 f"event: {event['event']}\n"
+#                 f"data: {json.dumps(event['data'], ensure_ascii=False)}\n\n"
+#             )
+
+#             if event["event"] == "done":
+#                 break
+
+#     return StreamingResponse(stream(), media_type="text/event-stream")
+
+
+# def Agent(model: str, req: ChatRequest, emit: QueueEmitter):
+#     emit("thinking", {"token": "fuck around you son of a bitch you bloodyy mother fuckeerrrrr"})
+#     time.sleep(0.5)
+#     emit("thinking", {"token": "you mother fucker pussy sucker gutter mutterr"})
+#     time.sleep(0.5)
+#     emit("thinking", {"token": "fucker"})
+
+import json 
+from python.fill_db import fetch_product_field_values
+from python.db_connection import  create_qdrant_connection,create_connection
+mariadbclient = create_connection()
+vectordbclient = create_qdrant_connection()
+
+from python.tools import search_products,_vector_matches_for_field
+
+print(search_products( {'category': 'monitors', 'name': 'odyssey', 'price': {'operator': 'lt', 'value': 2000}, 'supplier': ''}))
+
+# print(_vector_matches_for_field(vectordbclient,"supplier","Intel"))
+# from python.fill_db import fetch_product_field_values
+
+# x = fetch_product_field_values(mariadbclient)
+# from IPython import embed
+# embed()
+

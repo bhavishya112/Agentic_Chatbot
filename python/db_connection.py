@@ -54,16 +54,18 @@ def create_qdrant_connection():
         qdrant_api_key = os.getenv("QDRANT_API_KEY")
 
         if qdrant_url:
-            print("✅ Connection with Qdrant Online Successfull!")
-            return QdrantClient(url=qdrant_url, api_key=qdrant_api_key)
+            client = QdrantClient(url=qdrant_url, api_key=qdrant_api_key)
+            print("✅ Connection with Qdrant Successfull!")
+            return client
 
-        storage_path = os.getenv(
-            "QDRANT_PATH",
-            str(Path(__file__).resolve().parent / "data" / "qdrant_storage"),
-        )
+        raise Exception("Qdrant Connection Un succesfull")
+        # storage_path = os.getenv(
+        #     "QDRANT_PATH",
+        #     str(Path(__file__).resolve().parent / "data" / "qdrant_storage"),
+        # )
 
-        print("✅ Connection with Qdrant Offline Successfull!")
-        return QdrantClient(path=storage_path)
+        # print("✅ Connection with Qdrant Offline Successfull!")
+        # return QdrantClient(path=storage_path)
 
     except Exception as e:
         print(f"Qdrant connection error: {e}")
