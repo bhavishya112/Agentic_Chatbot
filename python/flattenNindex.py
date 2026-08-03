@@ -30,7 +30,14 @@ NOTE ON SCHEMA CHANGE vs. the old ui_scraper.py:
 
 """
 
-import logging, traceback
+from openai import OpenAI
+import chromadb
+import uuid
+import json
+import argparse
+import logging
+import traceback
+from python.make_readable import color_readable
 
 logger = logging.getLogger(__name__)
 
@@ -43,13 +50,6 @@ logging.basicConfig(
     encoding="utf-8",
 )
 
-import argparse
-import json
-import uuid
-
-import chromadb
-
-from openai import OpenAI
 
 openaiclient = OpenAI(base_url="http://localhost:11434/v1", api_key="ollama")
 
@@ -126,6 +126,11 @@ def flatten(node, path, page: str, description: str, view="desktop", rows=None):
     Walks the nested tagName/children tree produced by the new scraper
     and returns a flat list of dict rows, one per element, each carrying
     a breadcrumb "path" that encodes the hierarchy (no graph DB needed).
+
+    Important: child recursion must pass the same `rows` list plus the
+    `description` parameter in the correct slot. A previous bug passed
+    `view` as `description`, which caused child nodes to recurse into
+    a fresh rows list and drop all but the root rows.
     """
     if rows is None:
         rows = []
@@ -142,26 +147,28 @@ def flatten(node, path, page: str, description: str, view="desktop", rows=None):
             "id": str(uuid.uuid4()),
             "page": page,
             "description": description,
-            "view": view,
-            "state": None,  # no AJAX/state discovery in the new scraper
-            "path": current_path,
             "label": label,
-            "tag": node.get("tagName"),
-            "type": node.get("role"),  # closest analogue to the old "type" field
-            "element_id": node.get("id"),
-            "class_name": node.get("className"),
             "text": own_text,
+            "position": node.get("position"),
+            "type": node.get("role"),
+            "color": color_readable(node.get("color")),
+            "size_cm": node.get("size"),
+            "view": view,
+            # "state": None,  # no AJAX/state discovery in the new scraper
             "full_text": (node.get("text") or "")[:FULL_TEXT_TRUNCATE],
-            "selector": _pseudo_selector(node),
-            "position": node.get("position"),  # not provided by the new scraper
-            "size": node.get("size"),
             "visible": node.get("visible"),
-            "color": node.get("color"),
+            # "path": current_path,
+            # "tag": node.get("tagName"),
+            # closest analogue to the old "type" field
+            # "element_id": node.get("id"),
+            # "class_name": node.get("className"),
+            # "selector": _pseudo_selector(node),
+            # not provided by the new scraper
         }
     )
 
     for child in node.get("children") or []:
-        flatten(child, current_path, page, view, rows)
+        flatten(child, current_path, page, description, view, rows)
 
     return rows
 
@@ -175,12 +182,14 @@ def flatten_snapshot(snapshot: dict, page: str, description: str) -> list:
 
     for view in ("desktop", "mobile"):
         root = snapshot.get(view)
-        if not root:
-            continue
+        # if not root:
+        #     continue
         flatten(
             root, path="", page=page, description=description, view=view, rows=all_rows
         )
 
+    # import IPython
+    # IPython.embed()
     return all_rows
 
 
@@ -196,14 +205,23 @@ def build_index(rows: list, db_path: str = "./data/vectordb/ui_vector_db2"):
 
     # searchable text = path + own text, this is what gets embedded
     documents = []
+    # import IPython
+    # IPython.embed()
     for r in rows:
-        if r['tagName'] == "body":
-            documents.append(f"{r['page']} : {r['description']}\ntext : {r['text']}".strip())
+        if r.get("tag") == "body":
+            documents.append(
+                f"{r['page']} : {r['description']}\nlabel : {r['label']}, text : {r['full_text'][:20]}, color : {r['color']}".strip()
+            )
         else:
-            documents.append(f"{r['page']}  tag: {r['tagName']}: \ntext : {r['text']}".strip())
-        
-    response = openaiclient.embeddings.create(input=documents, model=MODEL_NAME)
-    embeddings = [emb.embedding for emb in response.data]
+            documents.append(
+                f"{r['page']} :\nlabel : {r['label']},text : {r['full_text'][:20]},color : {r['color']}".strip())
+
+    # response = openaiclient.embeddings.create(
+    #     input=documents, model=MODEL_NAME)
+    from sentence_transformers import SentenceTransformer
+    model = SentenceTransformer("all-minilm-l6-v2")
+    embeddings = model.encode(documents).tolist()
+    # embeddings = [emb.embedding for emb in response.data]
 
     ids = [r["id"] for r in rows]
     metadatas = []
@@ -289,6 +307,8 @@ def main():
         snapshot = json.load(f)
 
     rows = flatten_snapshot(snapshot, page=args.page, description=args.desc)
+    # import IPython
+    # IPython.embed()
     build_index(rows, db_path=args.db)
 
 

@@ -1,3 +1,5 @@
+import argparse
+import os.path as path
 import json
 from playwright.sync_api import sync_playwright
 
@@ -14,9 +16,32 @@ def extract_ui_tree(url):
         # Recursive JS function executed in the browser context
         ui_tree_json = page.evaluate("""() => {
     const parseNode = (element) => {
+
+    
         if (!element) return null;
                                      
         const rect = element.getBoundingClientRect();
+
+        //Readable Position----------------------------
+        const x = rect.left + window.scrollX;
+        const y = rect.top + window.scrollY;
+
+        const pageWidth = document.documentElement.scrollWidth;
+        const pageHeight = document.documentElement.scrollHeight;
+
+        // Horizontal thirds
+        let horiz;
+        if (x < pageWidth / 3) horiz = "left";
+        else if (x < (2 * pageWidth) / 3) horiz = "center";
+        else horiz = "right";
+
+        // Vertical thirds
+        let vert;
+        if (y < pageHeight / 3) vert = "top";
+        else if (y < (2 * pageHeight) / 3) vert = "middle";
+        else vert = "bottom";
+        //---------------------------------------
+
         const innerText = element.innerText || "";
         // Construct the base properties of the current UI element
         const nodeData = {
@@ -26,8 +51,8 @@ def extract_ui_tree(url):
             className: element.className || null,
             role: element.getAttribute('role') || null,
             text: innerText.trim(),
-            position : { x: rect.left + window.scrollX, y: rect.top + window.scrollY },
-            size : { width: rect.width, height: rect.height },
+            position : vert + "-" + horiz,
+            size : { width: Math.round((rect.width/100)*2.54), height: Math.round((rect.height/100)*2.54) },
             visible : !!(element.offsetParent !== null && rect.width > 0 && rect.height > 0),
             color : getComputedStyle(element).color,
             children: []
@@ -63,6 +88,27 @@ def extract_ui_tree(url):
         if (!element) return null;
         
         const rect = element.getBoundingClientRect();
+
+                //Readable Position----------------------------
+        const x = rect.left + window.scrollX;
+        const y = rect.top + window.scrollY;
+
+        const pageWidth = document.documentElement.scrollWidth;
+        const pageHeight = document.documentElement.scrollHeight;
+
+        // Horizontal thirds
+        let horiz;
+        if (x < pageWidth / 3) horiz = "left";
+        else if (x < (2 * pageWidth) / 3) horiz = "center";
+        else horiz = "right";
+
+        // Vertical thirds
+        let vert;
+        if (y < pageHeight / 3) vert = "top";
+        else if (y < (2 * pageHeight) / 3) vert = "middle";
+        else vert = "bottom";
+        //---------------------------------------
+        
         const innerText = element.innerText || "";
         // Construct the base properties of the current UI element
         const nodeData = {
@@ -73,8 +119,8 @@ def extract_ui_tree(url):
             role: element.getAttribute('role') || null,
             text: innerText.trim(),
             visible : !!(element.offsetParent !== null && rect.width > 0 && rect.height > 0),
-            position :{ x: rect.left + window.scrollX, y: rect.top + window.scrollY },
-            size :{ width: rect.width, height: rect.height },
+            position :vert + "-" + horiz,
+            size :{ width: Math.round((rect.width/400)*2.54), height: Math.round((rect.height/400)*2.54) },
             color : getComputedStyle(element).color,
             children: []
         };
@@ -102,11 +148,19 @@ def extract_ui_tree(url):
     return resTree
 
 
-import os.path as path
-
 # Example Usage
 if __name__ == "__main__":
-    target_url = "http://localhost/version3/stu_dash/my_certificate.php"
+    parser = argparse.ArgumentParser(
+        description="For Scraping Website UI in Json, for desktop and mobile"
+    )
+    parser.add_argument(
+        "url",
+        help="url of the webpage"
+    )
+
+    args = parser.parse_args()
+
+    target_url = args.url
     _, page = path.split(target_url)
     page, _ = path.splitext(page)
 

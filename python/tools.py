@@ -163,7 +163,7 @@ def query_ui(
         result = ""
         for data in matches:
             for x in data:
-                if x == "size" or x == "position":
+                if x == "size" :
                     data[x] = json.loads(data[x])
                 result += f"{x} : {data[x]}|"
                 # print(f"{x} : {data[x]}")
