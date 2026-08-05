@@ -41,9 +41,7 @@ def create_connection():
 def create_qdrant_connection():
     """
     Establishes a Qdrant connection and returns the client object.
-
-    Uses QDRANT_URL when provided, otherwise defaults to local on-disk storage
-    under data/qdrant_storage.
+    Qdrant has its own Volume on local drive.
     """
     if QdrantClient is None:
         print("Qdrant client is not installed. Install qdrant-client.")

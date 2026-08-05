@@ -50,6 +50,12 @@ basic_colors = {
 
 
 def color_readable(rgb_string):
+    """Converts a numerical color value to a distinct name say brown
+    Args:
+        rgb_string (string): its of the form "rgb(40,40,40)"
+    
+    Returns:
+        closest name of the color"""
     r, g, b = map(int, re.findall(r"\d+", rgb_string))
     requested = (r, g, b)
     min_dist = float("inf")

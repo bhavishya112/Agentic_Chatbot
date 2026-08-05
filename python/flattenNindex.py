@@ -6,27 +6,11 @@ Consumes the JSON produced by the new extract_ui_tree() scraper and:
   3. Provides a query() function to test retrieval.
 
 Usage:
-    python flatten_and_index.py snapshot.json --page leave
-    python flatten_and_index.py snapshot.json --page leave --query "why isn't the submit button working"
+    python flatten_and_index.py snapshot.json --page --description leave
+    python flatten_and_index.py snapshot.json --page --description leave --query "submit button on landingpage"
 
 Requires:
     pip install chromadb sentence-transformers --break-system-packages
-
-NOTE ON SCHEMA CHANGE vs. the old ui_scraper.py:
-  - Each view (desktop/mobile) is now a SINGLE root node (the <body> tree),
-    not {"sections": [...], "discovered_states": [...]}. There is no more
-    AJAX/tab/modal state discovery, so the old "state" field is always None
-    now (kept in the row schema for backwards compatibility with any
-    existing DB / downstream code that expects the key).
-  - Nodes now carry tagName / id / className / role / text / children
-    instead of label / tag / type / selector / position / visible.
-  - `element.innerText` includes ALL descendant text, so a node's raw
-    "text" field duplicates everything beneath it (e.g. the body node's
-    text is the entire page). We compute each node's *own* text
-    (its text with its children's text subtracted out) and use that for
-    the embedding document and the breadcrumb label, to avoid massive
-    duplication/noise in the vector index. The full (raw) text is still
-    kept in metadata, truncated, in case it's useful for debugging.
 
 """
 
@@ -41,6 +25,8 @@ from python.make_readable import color_readable
 
 logger = logging.getLogger(__name__)
 
+
+#----------------------------------------LOGGER----------------------------------------
 logging.basicConfig(
     filename="logs/ai_backend.log",
     filemode="a",  # 'a' appends new logs; 'w' overwrites each run
@@ -49,7 +35,7 @@ logging.basicConfig(
     datefmt="%H:%M %d %B",
     encoding="utf-8",
 )
-
+#-----------------------------------------------------------------------------------------
 
 openaiclient = OpenAI(base_url="http://localhost:11434/v1", api_key="ollama")
 
@@ -121,16 +107,18 @@ def _pseudo_selector(node: dict) -> str:
     return tag
 
 
-def flatten(node, path, page: str, description: str, view="desktop", rows=None):
+def flatten(node:dict, path:str, page: str, description: str, view="desktop", rows:list=None):
     """
-    Walks the nested tagName/children tree produced by the new scraper
-    and returns a flat list of dict rows, one per element, each carrying
-    a breadcrumb "path" that encodes the hierarchy (no graph DB needed).
+    Recursively Walks the nested children tree produced by the scraper.py
+    and returns a flat list of dict rows, one per element
 
-    Important: child recursion must pass the same `rows` list plus the
-    `description` parameter in the correct slot. A previous bug passed
-    `view` as `description`, which caused child nodes to recurse into
-    a fresh rows list and drop all but the root rows.
+    Args:
+        node (dict) : the particular DOM tree node containing subsequent childrens
+        path (str) : (deprecated) the ui class names path
+        page (str) : the pagename like "landingpage"
+        description : the global page description describing the contents in the page
+        view (str) : the device in which the element was rendered.
+        rows (list) : flattened tree in the form of rows,it records the structure while we dig deeper.
     """
     if rows is None:
         rows = []
@@ -140,7 +128,7 @@ def flatten(node, path, page: str, description: str, view="desktop", rows=None):
 
     own_text = _own_text(node)
     label = _label_for(node, own_text)
-    current_path = f"{path} > {label}" if path else label
+    # current_path = f"{path} > {label}" if path else label
 
     rows.append(
         {
@@ -168,15 +156,16 @@ def flatten(node, path, page: str, description: str, view="desktop", rows=None):
     )
 
     for child in node.get("children") or []:
-        flatten(child, current_path, page, description, view, rows)
+        flatten(child, "", page, description, view, rows)
 
     return rows
 
 
 def flatten_snapshot(snapshot: dict, page: str, description: str) -> list:
     """
-    Flattens a full extract_ui_tree() output (desktop + mobile body trees)
-    into one flat list of rows.
+    Driver Code for flatten() function \\ 
+    Since Scraping UI from playwright gives us DOM tree which is complex, we needed a simpler
+    solution so that we can feed things into our vectorDB.
     """
     all_rows = []
 
@@ -198,8 +187,12 @@ def flatten_snapshot(snapshot: dict, page: str, description: str) -> list:
 # ---------------------------------------------------------------------------
 
 
-def build_index(rows: list, db_path: str = "./data/vectordb/ui_vector_db2"):
-
+def build_index(rows: list[dict], db_path: str = "./data/vectordb/ui_vector_db2"):
+    """Stores the Flattened UI Tree into vectorDB.
+    Args:
+        rows (list) : The flattened ui tree in the form [{"page":"pagename","size_cm":n...}...]
+        db_path (pathlike str) : the relative path to where the vectordb collection/data goes"""
+    
     client = chromadb.PersistentClient(path=db_path)
     collection = client.get_or_create_collection(COLLECTION_NAME)
 
@@ -245,7 +238,7 @@ def build_index(rows: list, db_path: str = "./data/vectordb/ui_vector_db2"):
 
         # print(traceback.print_exc())
     print(f"Indexed {len(rows)} elements into '{db_path}'")
-    return collection
+    
 
 
 # ---------------------------------------------------------------------------
@@ -254,6 +247,7 @@ def build_index(rows: list, db_path: str = "./data/vectordb/ui_vector_db2"):
 
 
 def query(question: str, db_path: str = "data/vectordb/ui_vector_db2", top_k: int = 5):
+    """this queries the vectordb for UI data and returns top_k matches with scores"""
     client = chromadb.PersistentClient(path=db_path)
     collection = client.get_or_create_collection(COLLECTION_NAME)
 

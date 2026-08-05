@@ -29,8 +29,8 @@ def web_search(query: str, num_results: int = 5) -> str:
     Search the web and return formatted results.
 
     Args:
-        query: Search query
-        num_results: Number of results to return
+        query (str): Search query
+        num_results (int): Number of results to return
 
     Returns:
         Formatted string containing search results.
@@ -61,7 +61,7 @@ def web_search(query: str, num_results: int = 5) -> str:
         result = "\n".join(output)
         logger.info("✅Web Search Ended")
         logger.info("[RESULT-WEB SEARCH] : \n%s", result)
-        if len(result) // 4 > 500:  # token limit bhi to bachani h dost
+        if len(result) // 4 > 500:  # each token is on average 4 characters
             return summarize(result, query)
         return result
 
@@ -138,6 +138,15 @@ def query_ui(
     view: Literal["desktop", "mobile"] = "desktop",
     collection: str = "ui_elements",
 ) -> str:
+    """
+    Used for Querying vectordb to return ui elements' information given what we want
+    Args:
+        question (str): a very concise question like "login button" 
+        top_k (str): [reranker should be added for scalability] top k no. of results to retrieve
+        view (str): mobile or desktop
+        collection (str): collection name
+    Returns:
+        k no. of ui element information [currently in plain string format, to be changed later for reranking]"""
 
     try:
         logger.info("[query_ui(question : %s,top_k : %d, view : %s, collection : %s)]",
@@ -179,9 +188,9 @@ def query_ui(
 
 # =================================DATABASE TOOLS=========================================================================
 
-SEARCH_SCORE_THRESHOLD = 0.7
-SEARCH_LIMIT = 10
-SEARCH_FIELD_MAP = {
+SEARCH_SCORE_THRESHOLD = 0.7 # filter vectordb retrieval results 
+SEARCH_LIMIT = 10   # no. of webpages to return by web_search tool
+SEARCH_FIELD_MAP = {    # its currently useless, but keep it here for stability
     "name": "name",
     "category": "category",
     "supplier": "supplier",
@@ -232,6 +241,9 @@ def search_products(query: dict):
         },
         "supplier" : "string"
     }
+
+    Returns:
+        (name,category,price,supplier) tuples
 
     """
     logger.info("[search_products(query : %s)]", str(query))

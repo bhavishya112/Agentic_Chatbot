@@ -1,4 +1,4 @@
-name: agentik
+name: Agentik
 channels:
   - defaults
   - conda-forge
@@ -23,9 +23,9 @@ dependencies:
   - brotlicffi=1.2.0.0=py311h885b0b7_0
   - bzip2=1.0.8=h2bbff1b_6
   - c-ares=1.34.6=h2c209ce_0
-  - ca-certificates=2026.6.17=h4c7d964_0
+  - ca-certificates=2026.7.22=h4c7d964_0
   - cachetools=5.5.1=py311haa95532_0
-  - certifi=2026.6.17=py311haa95532_0
+  - certifi=2026.7.22=pyhd8ed1ab_0
   - cffi=2.0.0=py311h02ab6af_1
   - chardet=5.2.0=py311haa95532_0
   - chroma-hnswlib=0.7.6=py311h197d679_0
@@ -276,6 +276,7 @@ dependencies:
   - vs2015_runtime=14.44.35208=ha6b5a95_12
   - watchfiles=1.2.0=py311h51239a8_0
   - wcwidth=0.2.14=py311haa95532_0
+  - webcolors=25.10.0=pyhd8ed1ab_0
   - webencodings=0.5.1=py311haa95532_1
   - websocket-client=1.8.0=py311haa95532_0
   - websockets=15.0.1=py311h827c3e9_0
@@ -344,4 +345,4 @@ dependencies:
       - uritemplate==4.2.0
       - uvicorn==0.32.1
       - xxhash==3.8.1
-prefix: C:\Users\Public\AppData\anaconda3\envs\agentik
+prefix: C:\Users\Public\AppData\anaconda3\envs\Agentik

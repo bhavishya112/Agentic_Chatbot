@@ -27,7 +27,8 @@ GROQ_API_KEY = environ.get("GROQ_API_KEY")
 sys.stdout.reconfigure(encoding="utf-8", newline="\n")
 sys.stderr.reconfigure(encoding="utf-8", newline="\n")
 
-# Configure logging
+
+# ==================================LOGGER=========================================================
 logger = logging.getLogger(__name__)
 
 logger = logging.getLogger("agent")
@@ -42,9 +43,13 @@ handler.setFormatter(logging.Formatter(
 
 logger.addHandler(handler)
 logger.propagate = False
+# ============================================================================================
 
 
 class QueueEmitter:
+    """This Class contains a Queue to store SSE events, pipelines events from different places
+    into the single place of communication (chat() function)
+    """
 
     def __init__(self):
         self.queue = asyncio.Queue()
@@ -53,10 +58,13 @@ class QueueEmitter:
         self.queue.put_nowait({"event": event, "data": data})
 
 
-app = FastAPI()
-
-
 class ChatRequest(BaseModel):
+    """this class defines the structure of request that the php backend (backend.php) 
+    should adhere to
+    Attributes:
+        user_id (int): php server generated user_id
+        conv_id (int): conversation id scoped to a user_id
+        query (str): the user query string """
     user_id: int
     conv_id: int
     query: str
@@ -67,7 +75,12 @@ logger.info("The application started successfully.")
 
 # ============================================================================================
 #                                       TOOL DEFINITIONS | TOOLS
-# ============================================================================================
+# ==========================================================================================
+
+# These are different TOOLS to be fed into the LLM
+# "required" field should have all the parameters, currently the API sends error 401 if not so
+# "strict" = True must be there
+
 TOOLS = [
     {
         "type": "function",
@@ -223,8 +236,9 @@ TOOLS = [
 
 # ================================================================================================
 #                                   TOOL REGISTRY
-# ==============================================================================================
+# ================================================================================================
 
+# Just import your tool from tools.py and put it here
 AVAILABLE_TOOLS: dict[str, Callable] = {
     "web_search": web_search, "query_ui": query_ui, "get_order": get_order, "get_product": get_product, "search_products": search_products}
 
@@ -259,16 +273,29 @@ def run_tool(tool_name, **args) -> str:
 
 
 # ---------------------------------CONVERSATIONS---------------------------------------------------
+"""this Section Stores all the current Conversations (mapping user_id -> conversation_id -> messages), 
+Databases like Redis should be used in place of this."""
+
 CONVERSATIONS: dict[int, dict[int, list]] = dict()
 
 
 def add_or_update_conv(message: list[dict[str, str]], user_id: int, conv_id: int):
+    """Adds Messages in the Server Level Pool of messages.
+    
+    Args:
+        message (list): LLM style messages of the form [{"role":"user","content":"hi"}...]
+        user_id (int): php backend set integer user id
+        conv_id (int): conversation_id, to store conversations in database, mapped to a particular user_id
+
+    """
     if not CONVERSATIONS.get(user_id) or not CONVERSATIONS.get(user_id).get(conv_id):
         CONVERSATIONS[user_id] = {conv_id: [message[0]]}
     else:
         CONVERSATIONS[user_id][conv_id].extend(message)
         CONVERSATIONS[user_id][conv_id] = CONVERSATIONS[user_id][conv_id][-5:]
     logger.info("⚠️ [CONVERSATIONS] : %s", CONVERSATIONS)
+
+# ---------------------------------------------------------------------------------------------------
 
 
 # client = OpenAI(
@@ -280,9 +307,12 @@ client = OpenAI(
     api_key=GROQ_API_KEY,
 )
 
-MAX_ITERATIONS = 5
+MAX_ITERATIONS = 5  # Max React Cycle Loop Limit
 MODEL = "openai/gpt-oss-20b"
 # MODEL = "llama3.1:8b"
+
+
+app = FastAPI()
 
 
 # Allow all origins (for testing)
@@ -294,9 +324,9 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-
 @app.post("/chat")
 async def chat(req: ChatRequest):
+    """Main Gate for the python server, From here all User-Agent Communication happens"""
     # add_or_update_conv(req.query, req.user_id, req.conv_id)
     emitter = QueueEmitter()
 
@@ -326,7 +356,12 @@ async def chat(req: ChatRequest):
 #                                               AGENT
 # ======================================================================================================================
 
-def Agent(model: str, req: ChatRequest, emit: QueueEmitter):
+def Agent(model: str, req: ChatRequest, emit: Callable):
+    """This function drives the Agentic flow
+    Args:
+        model (str): use full and correct names for the LLM to use
+        req (ChatRequest): the request object from php backend
+        emit (QueueEmitter): SSE events are piped to their correct place via calling this function"""
     try:
         system_prompt = """
         You are helpful chatbot for our customers, you can take multiple turns if a tool call fails

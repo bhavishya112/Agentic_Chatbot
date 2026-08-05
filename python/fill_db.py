@@ -30,7 +30,8 @@ _embedding_model = None
 
 
 def get_embedding_model():
-    """Load the embedding model once per process."""
+    """Load the embedding model once per process.
+    I seriously don't know why this function exists, dumb function"""
     global _embedding_model
     if SentenceTransformer is None:
         raise ImportError("sentence-transformers is required for embeddings.")
@@ -49,7 +50,8 @@ def embed_text(
 
 
 def ensure_collections(qdrant_conn):
-    """Create the three product-field collections when missing."""
+    """Create the three product-field collections when missing, refer to the variable
+    FIELD_COLLECTIONS for info regarding collection names"""
     if Distance is None or VectorParams is None:
         raise ImportError("qdrant-client is required for vector storage.")
 
@@ -70,7 +72,13 @@ def ensure_collections(qdrant_conn):
 
 
 def fetch_product_field_values(mariadb_conn):
-    """Read distinct product names, categories, and suppliers from MariaDB."""
+    """Returns distinct product names, categories, and suppliers from MariaDB.\\
+    The structure returned is like this: \\
+    {"name": "name : RTX-5090 category : Electronics",\\
+    "category" : "Electronics",\\
+    "supplier" : "NVIDIA"}\\
+    Note: I added category to "name" to give more context to RAG so that it retrieves the right product
+    """
     cursor = mariadb_conn.cursor()
     cursor.execute("SELECT name, category, supplier FROM products")
     rows = cursor.fetchall()
@@ -104,6 +112,8 @@ def fetch_product_field_values(mariadb_conn):
 
 
 def extract_name(text: str) -> str:
+    """because the "name" field is of the form "name: xyz category: 123", this function 
+    retrieves the proper name out of it, so AI can be fed with the right details"""
     # Regex: look for "name :" followed by any characters until "category" or end of string
     match = re.search(r"name\s*:\s*(.*?)\s*(?:category|$)",
                       text, re.IGNORECASE)
@@ -112,8 +122,15 @@ def extract_name(text: str) -> str:
     return text
 
 
-def build_points(field_name, values, model=None):
-    """Build deterministic Qdrant points for one product field."""
+def build_points(field_name: str, values: set, model=None):
+    """Build Qdrant points for one product field.
+    Args:
+        field_name (str) : The Database Field Name, example: name, category or supplier
+        values (set[string]) : set of all values of a field from database to be indexed
+        model (SentenceTransformer) : the model to encode the text into vector
+    Returns:
+        list of vector embeddings for those string values
+    """
     if PointStruct is None:
         raise ImportError("qdrant-client is required for vector storage.")
 
@@ -133,7 +150,10 @@ def build_points(field_name, values, model=None):
 
 
 def fill_qdrant_from_mariadb(mariadb_conn=None, qdrant_conn=None, model=None):
-    """Sync product_name, category, and supplier values from MariaDB to Qdrant."""
+    """Sync product_name, category, and supplier values from MariaDB to Qdrant.\\
+    This is the main driver function for this module
+    Returns:
+        either error or "index n points" message """
     owns_mariadb_conn = mariadb_conn is None
     mariadb_conn = mariadb_conn or create_connection()
     qdrant_conn = qdrant_conn or create_qdrant_connection()
@@ -146,7 +166,8 @@ def fill_qdrant_from_mariadb(mariadb_conn=None, qdrant_conn=None, model=None):
     try:
         model = model or get_embedding_model()
         ensure_collections(qdrant_conn)
-        values_by_field = fetch_product_field_values(mariadb_conn) # {name : {name + category}, category : {}, supplier : {}}
+        # {name : {name + category}, category : {}, supplier : {}}
+        values_by_field = fetch_product_field_values(mariadb_conn)
         # import IPython
         # IPython.embed()
 
@@ -157,7 +178,7 @@ def fill_qdrant_from_mariadb(mariadb_conn=None, qdrant_conn=None, model=None):
                 qdrant_conn.upsert(
                     collection_name=FIELD_COLLECTIONS[field_name],
                     points=points,
-                    
+
                 )
             counts[field_name] = len(points)
 

@@ -4,7 +4,13 @@ import json
 from playwright.sync_api import sync_playwright
 
 
-def extract_ui_tree(url):
+def extract_ui_tree(url:str):
+    """Renders the page using Playwright and extracts DOM tree from mobile (360x414) and desktop (1280x720) perspectives
+    Args:
+        url (str): the full url string of the webpage, can be any webpage from any host or localhost runnable in browser
+    Returns:
+        DOM tree (dict)"""
+    
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=True)
         page = browser.new_page()
